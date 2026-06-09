@@ -211,6 +211,110 @@
       localStorage.setItem('inv_servicos', JSON.stringify(servicos));
     }
 
+
+
+    // ─── Backup local (JSON) ─────────────────────────────────────────────────
+
+    const BACKUP_VERSION = 1;
+
+    function normalizeList(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function buildBackupPayload({ artigos, movimentos, servicos }) {
+      return {
+        app: 'inventario-local',
+        schemaVersion: BACKUP_VERSION,
+        exportedAt: new Date().toISOString(),
+        data: {
+          artigos: normalizeList(artigos),
+          movimentos: normalizeList(movimentos),
+          servicos: normalizeList(servicos),
+        },
+      };
+    }
+
+    function parseBackupJSON(text) {
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        throw new Error('O ficheiro não é um JSON válido.');
+      }
+
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('Formato de cópia de segurança inválido.');
+      }
+      if (payload.app !== 'inventario-local' || payload.schemaVersion !== BACKUP_VERSION) {
+        throw new Error(`Esta app só consegue restaurar cópias de segurança v${BACKUP_VERSION}.`);
+      }
+      if (!payload.data || typeof payload.data !== 'object') {
+        throw new Error('A cópia de segurança não contém dados para restaurar.');
+      }
+
+      const artigos = normalizeList(payload.data.artigos);
+      const movimentos = normalizeList(payload.data.movimentos);
+      const servicos = normalizeList(payload.data.servicos);
+
+      const invalidArtigo = artigos.find(a => !a || typeof a !== 'object' || !a.id || !a.codigo);
+      if (invalidArtigo) throw new Error('A lista de inventário contém artigos inválidos.');
+
+      const invalidMovimento = movimentos.find(m => !m || typeof m !== 'object' || !m.id || !m.codigo || !m.tipo);
+      if (invalidMovimento) throw new Error('A lista de movimentos contém registos inválidos.');
+
+      const invalidServico = servicos.find(s => !s || typeof s !== 'object' || !s.cod);
+      if (invalidServico) throw new Error('A lista de serviços contém registos inválidos.');
+
+      return {
+        exportedAt: payload.exportedAt,
+        artigos,
+        movimentos,
+        servicos,
+      };
+    }
+
+    async function saveJSONWithPicker(payload, suggestedName) {
+      const json = JSON.stringify(payload, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName,
+            types: [{
+              description: 'Cópia de segurança JSON',
+              accept: { 'application/json': ['.json'] },
+            }],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          return true;
+        } catch (err) {
+          if (err.name === 'AbortError') return false;
+          throw err;
+        }
+      }
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = suggestedName;
+      a.click();
+      URL.revokeObjectURL(url);
+      return true;
+    }
+
+    function saveCompleteStorage(artigos, movimentos, servicos) {
+      const aStr = JSON.stringify(artigos);
+      const mStr = JSON.stringify(movimentos);
+      const sStr = JSON.stringify(servicos);
+      if (aStr.length + mStr.length + sStr.length > STORAGE_LIMIT) throw new Error('QUOTA');
+      localStorage.setItem('inv_artigos', aStr);
+      localStorage.setItem('inv_movimentos', mStr);
+      localStorage.setItem('inv_servicos', sStr);
+    }
+
     function parseServicosXLSX(arrayBuffer) {
       const wb = XLSX.read(arrayBuffer, { type: 'array' });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -2086,13 +2190,85 @@
         }
       }
 
+      async function exportarBackup() {
+        if (isLoading) return;
+        setOperation({
+          type: 'export-backup',
+          message: 'A exportar cópia de segurança...',
+          detail: 'A preparar inventário, movimentos e serviços num ficheiro JSON v1.',
+        });
+        try {
+          const payload = buildBackupPayload({ artigos, movimentos, servicos });
+          const fileName = 'copia_seguranca_inventario_v1_' + new Date().toISOString().split('T')[0] + '.json';
+          const saved = await saveJSONWithPicker(payload, fileName);
+          if (saved) {
+            toast(`Cópia de segurança exportada: ${artigos.length} artigo(s), ${movimentos.length} movimento(s), ${servicos.length} serviço(s).`);
+          }
+        } catch (err) {
+          toast('Erro ao exportar cópia de segurança: ' + err.message, 'error');
+        } finally {
+          setOperation(null);
+        }
+      }
+
+      function handleBackupRestore(e) {
+        if (isLoading) return;
+        const file = e.target.files[0];
+        if (!file) return;
+        e.target.value = '';
+
+        if (!file.name.match(/\.json$/i)) {
+          toast('Por favor seleccione uma cópia de segurança .json', 'error');
+          return;
+        }
+
+        setOperation({ type: 'restore-backup', message: 'A ler cópia de segurança...', detail: file.name });
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          try {
+            const backup = parseBackupJSON(ev.target.result);
+            const dataBackup = backup.exportedAt
+              ? new Date(backup.exportedAt).toLocaleString('pt-PT')
+              : 'data desconhecida';
+
+            setConfirm({
+              title: 'Restaurar cópia de segurança',
+              message: `Esta acção vai substituir o estado actual da app por uma cópia de segurança v${BACKUP_VERSION}.\n\nConteúdo a restaurar:\n• ${backup.artigos.length} artigo(s)\n• ${backup.movimentos.length} movimento(s)\n• ${backup.servicos.length} serviço(s)\n• Exportada em: ${dataBackup}\n\nOs dados v1 ficam guardados apenas no dispositivo e navegador actuais. Confirme que quer continuar.`,
+              confirmLabel: 'Restaurar',
+              danger: true,
+              onConfirm: () => {
+                try {
+                  saveCompleteStorage(backup.artigos, backup.movimentos, backup.servicos);
+                  setArtigos(backup.artigos);
+                  setMovimentos(backup.movimentos);
+                  setServicos(backup.servicos);
+                  setConfirm(null);
+                  setActiveTab('dashboard');
+                  toast(`Cópia de segurança restaurada: ${backup.artigos.length} artigo(s), ${backup.movimentos.length} movimento(s), ${backup.servicos.length} serviço(s).`);
+                } catch (err) {
+                  if (err.message === 'QUOTA') toast('Limite de armazenamento atingido. A cópia de segurança é demasiado grande para este navegador.', 'error');
+                  else toast('Erro ao restaurar cópia de segurança: ' + err.message, 'error');
+                }
+              },
+              onCancel: () => setConfirm(null),
+            });
+          } catch (err) {
+            toast('Erro ao validar cópia de segurança: ' + err.message, 'error');
+          } finally {
+            setOperation(null);
+          }
+        };
+        reader.onerror = () => { toast('Erro ao ler cópia de segurança.', 'error'); setOperation(null); };
+        reader.readAsText(file);
+      }
+
       function limparDados() {
         setConfirm({
           title: 'Apagar todos os dados',
           message: 'Esta acção é irreversível.\nRecomendamos exportar o inventário antes de limpar.\n\nTem a certeza?',
           confirmLabel: 'Apagar tudo',
           danger: true,
-          onConfirm: () => { persistData([], []); setConfirm(null); setActiveTab('dashboard'); toast('Dados apagados.'); },
+          onConfirm: () => { saveCompleteStorage([], [], []); setArtigos([]); setMovimentos([]); setServicos([]); setConfirm(null); setActiveTab('dashboard'); toast('Dados apagados.'); },
           onCancel: () => setConfirm(null),
         });
       }
@@ -2150,6 +2326,16 @@
                     </span>
                     <input type="file" accept=".xlsx,.xls" onChange={handleServicosUpload} className="hidden" disabled={isLoading} />
                   </label>
+                  <button onClick={exportarBackup} disabled={isLoading}
+                    className={`px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium border ${isLoading ? 'text-gray-400 border-gray-200 cursor-not-allowed' : 'text-green-700 border-green-200 hover:bg-green-50'}`}
+                    title="Exportar inventário, movimentos e serviços para uma cópia de segurança local">
+                    <Icons.Download /> Exportar cópia de segurança
+                  </button>
+                  <label className={`px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium border ${isLoading ? 'text-gray-400 border-gray-200 cursor-not-allowed' : 'text-blue-700 border-blue-200 hover:bg-blue-50 cursor-pointer'}`}
+                    title="Restaurar o estado completo da app a partir de uma cópia de segurança JSON v1">
+                    <Icons.Upload /> Restaurar cópia de segurança
+                    <input type="file" accept=".json,application/json" onChange={handleBackupRestore} className="hidden" disabled={isLoading} />
+                  </label>
                   {artigos.length > 0 && (
                     <button onClick={limparDados} disabled={isLoading} className={`px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium border ${isLoading ? 'text-gray-400 border-gray-200 cursor-not-allowed' : 'text-red-600 border-red-200 hover:bg-red-50'}`}>
                       <Icons.Trash /> Limpar
@@ -2159,6 +2345,16 @@
               </div>
             </div>
           </header>
+
+          <div className="max-w-7xl mx-auto px-4 pt-4">
+            <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-4 py-3 flex items-start gap-3 text-sm">
+              <Icons.AlertTriangle />
+              <p>
+                <strong>Aviso:</strong> os dados v1 desta app ficam guardados apenas no dispositivo e navegador actuais.
+                Use <strong>Exportar cópia de segurança</strong> para proteger inventário, movimentos e serviços antes de limpar o browser ou mudar de dispositivo.
+              </p>
+            </div>
+          </div>
 
           <OperationStatus operation={operation} />
 
