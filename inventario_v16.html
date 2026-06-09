@@ -58,6 +58,17 @@
       const iTipo      = colIdx(['TIPO', 'CATEG', 'FAMILIA']);
       const iCor       = colIdx(['COR', 'COLOR']);
       const iQtd       = colIdx(['QUANT', 'QTD', 'STOCK', 'QT']);
+      const warnings = [];
+
+      [
+        [iCodigo, 'Código', 'coluna A'],
+        [iArtigo, 'Artigo/descrição', 'coluna B'],
+        [iTipo, 'Tipo/categoria', 'coluna C'],
+        [iCor, 'Cor', 'coluna D'],
+        [iQtd, 'Quantidade/stock', 'coluna E'],
+      ].forEach(([idx, label, fallback]) => {
+        if (idx < 0) warnings.push(`${label} não encontrado no cabeçalho; usada ${fallback}.`);
+      });
 
       const ci = iCodigo >= 0 ? iCodigo : 0;
       const ca = iArtigo >= 0 ? iArtigo : 1;
@@ -66,19 +77,43 @@
       const cq = iQtd    >= 0 ? iQtd    : 4;
 
       const artigos = [];
+      const codigosVistos = new Set();
+      let ignoredRows = 0;
+      let duplicateRows = 0;
+      let invalidQuantityRows = 0;
+
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i];
         const codigo = String(row[ci] ?? '').trim();
-        if (!codigo) continue;
+        if (!codigo) { ignoredRows++; continue; }
+        if (codigosVistos.has(codigo)) { ignoredRows++; duplicateRows++; continue; }
+        codigosVistos.add(codigo);
+
+        const quantidadeRaw = row[cq];
+        const quantidade = parseInt(quantidadeRaw);
+        if (String(quantidadeRaw ?? '').trim() !== '' && Number.isNaN(quantidade)) invalidQuantityRows++;
+
         artigos.push({
           codigo,
           artigo:    String(row[ca] ?? '').trim(),
           tipo:      String(row[ct] ?? '').trim(),
           cor:       String(row[cc] ?? '').trim(),
-          quantidade: parseInt(row[cq]) || 0,
+          quantidade: Number.isNaN(quantidade) ? 0 : quantidade,
         });
       }
-      return artigos;
+
+      if (duplicateRows > 0) warnings.push(`${duplicateRows} linha(s) duplicada(s) foram ignorada(s).`);
+      if (invalidQuantityRows > 0) warnings.push(`${invalidQuantityRows} linha(s) tinham quantidade inválida e foram tratadas como 0.`);
+
+      return {
+        artigos,
+        summary: {
+          importedRows: artigos.length,
+          ignoredRows,
+          totalRows: Math.max(rows.length - 1, 0),
+          warnings,
+        },
+      };
     }
 
     async function saveWorkbookWithPicker(wb, suggestedName) {
@@ -250,6 +285,21 @@
       }, []);
       const remove = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), []);
       return { toasts, toast: add, removeToast: remove };
+    }
+
+    function OperationStatus({ operation }) {
+      if (!operation) return null;
+      return (
+        <div className="max-w-7xl mx-auto px-4 pt-4" role="status" aria-live="polite">
+          <div className="bg-blue-50 border border-blue-200 text-blue-800 rounded-xl px-4 py-3 flex items-center gap-3 shadow-sm">
+            <span className="inline-block w-4 h-4 border-2 border-blue-200 border-t-blue-700 rounded-full animate-spin shrink-0" aria-hidden="true"></span>
+            <div>
+              <p className="text-sm font-semibold">{operation.message}</p>
+              {operation.detail && <p className="text-xs text-blue-700 mt-0.5">{operation.detail}</p>}
+            </div>
+          </div>
+        </div>
+      );
     }
 
     // ─── Confirm Modal ────────────────────────────────────────────────────────
@@ -516,7 +566,7 @@
 
     const PAGE_SIZE = 50;
 
-    function InventarioTab({ artigos, searchTerm, setSearchTerm, filterCor, setFilterCor, coresUnicas, filterTipo, setFilterTipo, tiposUnicos, onAddMovimento, onNovoArtigo, onEliminarArtigo, onExportar, setMostrarFolhaInventario }) {
+    function InventarioTab({ artigos, searchTerm, setSearchTerm, filterCor, setFilterCor, coresUnicas, filterTipo, setFilterTipo, tiposUnicos, onAddMovimento, onNovoArtigo, onEliminarArtigo, onExportar, setMostrarFolhaInventario, isBusy, operationType }) {
       const [sortKey, setSortKey] = useState('codigo');
       const [sortDir, setSortDir] = useState('asc');
       const [page, setPage] = useState(1);
@@ -557,21 +607,21 @@
           <div className="flex justify-between items-center mb-4 flex-wrap gap-3">
             <h2 className="text-xl font-bold text-gray-900">Inventário</h2>
             <div className="flex gap-2 flex-wrap">
-              <button onClick={onNovoArtigo}
-                className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2 text-sm font-medium">
+              <button onClick={onNovoArtigo} disabled={isBusy}
+                className={`text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium ${isBusy ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
                 <Icons.Plus /> Novo Artigo
               </button>
               {artigos.length > 0 && (
                 <>
-                  <button onClick={() => { setMostrarFolhaInventario(true); }} 
-                    className="bg-gray-700 text-white px-4 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2 text-sm font-medium">
+                  <button onClick={() => { setMostrarFolhaInventario(true); }} disabled={isBusy}
+                    className={`text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium ${isBusy ? 'bg-gray-400 cursor-not-allowed' : 'bg-gray-700 hover:bg-gray-800'}`}>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
                     </svg>
                     Folha de Inventário
                   </button>
-                  <button onClick={onExportar} className="bg-green-700 text-white px-4 py-2 rounded-lg hover:bg-green-800 flex items-center gap-2 text-sm font-medium">
-                    <Icons.FileXls /> Exportar Inventário .xlsx
+                  <button onClick={onExportar} disabled={isBusy} className={`text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium ${isBusy ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-700 hover:bg-green-800'}`}>
+                    <Icons.FileXls /> {operationType === 'export-inventory' ? 'A exportar inventário...' : 'Exportar Inventário .xlsx'}
                   </button>
                 </>
               )}
@@ -638,15 +688,15 @@
                           </span>
                         </td>
                         <td className="px-4 py-3 text-right text-sm whitespace-nowrap">
-                          <button onClick={() => onAddMovimento(artigo, 'entrada')} className="text-green-700 hover:text-green-900 mr-3 inline-flex items-center gap-1 font-medium">
+                          <button onClick={() => onAddMovimento(artigo, 'entrada')} disabled={isBusy} className={`mr-3 inline-flex items-center gap-1 font-medium ${isBusy ? 'text-gray-300 cursor-not-allowed' : 'text-green-700 hover:text-green-900'}`}>
                             <Icons.Plus /> Entrada
                           </button>
-                          <button onClick={() => onAddMovimento(artigo, 'saida')} disabled={artigo.quantidade === 0}
-                            className={`inline-flex items-center gap-1 font-medium mr-3 ${artigo.quantidade === 0 ? 'text-gray-300 cursor-not-allowed' : 'text-red-600 hover:text-red-900'}`}>
+                          <button onClick={() => onAddMovimento(artigo, 'saida')} disabled={isBusy || artigo.quantidade === 0}
+                            className={`inline-flex items-center gap-1 font-medium mr-3 ${(isBusy || artigo.quantidade === 0) ? 'text-gray-300 cursor-not-allowed' : 'text-red-600 hover:text-red-900'}`}>
                             <Icons.Minus /> Saída
                           </button>
-                          <button onClick={() => onEliminarArtigo(artigo)}
-                            className="text-gray-400 hover:text-red-600 inline-flex items-center font-medium" title="Eliminar artigo">
+                          <button onClick={() => onEliminarArtigo(artigo)} disabled={isBusy}
+                            className={`inline-flex items-center font-medium ${isBusy ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600'}`} title="Eliminar artigo">
                             <Icons.Trash />
                           </button>
                         </td>
@@ -672,7 +722,7 @@
 
     // ─── Movimentos Tab ───────────────────────────────────────────────────────
 
-    function MovimentosTab({ movimentos, onExportar, onEditar, onEliminar }) {
+    function MovimentosTab({ movimentos, onExportar, onEditar, onEliminar, isBusy, operationType }) {
       const [page, setPage] = useState(1);
       const [search, setSearch] = useState('');
 
@@ -691,8 +741,8 @@
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-xl font-bold text-gray-900">Histórico de Movimentos</h2>
             {movimentos.length > 0 && (
-              <button onClick={onExportar} className="bg-gray-900 text-white px-4 py-2 rounded-lg hover:bg-gray-700 flex items-center gap-2 text-sm">
-                <Icons.Download /> Exportar .xlsx
+              <button onClick={onExportar} disabled={isBusy} className={`text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm ${isBusy ? 'bg-gray-400 cursor-not-allowed' : 'bg-gray-900 hover:bg-gray-700'}`}>
+                <Icons.Download /> {operationType === 'export-movements' ? 'A exportar movimentos...' : 'Exportar .xlsx'}
               </button>
             )}
           </div>
@@ -745,14 +795,14 @@
                         <td className="px-4 py-3 text-sm text-gray-500 max-w-[160px] truncate">{mov.observacoes || '—'}</td>
                         <td className="px-4 py-3 text-right whitespace-nowrap">
                           <div className="flex justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => onEditar(mov)}
+                            <button onClick={() => onEditar(mov)} disabled={isBusy}
                               title="Editar"
-                              className="p-1.5 rounded-lg text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors">
+                              className={`p-1.5 rounded-lg transition-colors ${isBusy ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50'}`}>
                               <Icons.Pencil />
                             </button>
-                            <button onClick={() => onEliminar(mov)}
+                            <button onClick={() => onEliminar(mov)} disabled={isBusy}
                               title="Eliminar"
-                              className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors">
+                              className={`p-1.5 rounded-lg transition-colors ${isBusy ? 'text-gray-300 cursor-not-allowed' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'}`}>
                               <Icons.TrashSm />
                             </button>
                           </div>
@@ -1284,7 +1334,7 @@
 
     // ─── Preview de Importação XLSX ───────────────────────────────────────────
 
-    function ImportPreviewModal({ preview, artigos: artigosActuais, onConfirm, onCancel }) {
+    function ImportPreviewModal({ preview, summary, artigos: artigosActuais, onConfirm, onCancel }) {
       const existingMap = useMemo(() => {
         const m = {};
         artigosActuais.forEach(a => { m[a.codigo] = a; });
@@ -1324,6 +1374,13 @@
               </div>
             </div>
 
+            {summary && (
+              <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs space-y-1">
+                <p><strong>{summary.ignoredRows}</strong> linha(s) ignorada(s) em {summary.totalRows} linha(s) analisada(s).</p>
+                {summary.warnings.map((warning, idx) => <p key={idx}>Aviso: {warning}</p>)}
+              </div>
+            )}
+
             {aActualizar.length > 0 && (
               <div className="mb-4 overflow-y-auto max-h-48">
                 <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Artigos com mudança de quantidade</p>
@@ -1354,7 +1411,7 @@
 
             <div className="flex gap-3 mt-auto">
               <button onClick={onCancel} className="flex-1 px-4 py-2.5 border rounded-lg hover:bg-gray-50 text-sm">Cancelar</button>
-              <button onClick={() => onConfirm({ novos, aActualizar })}
+              <button onClick={() => onConfirm({ novos, aActualizar, semMudanca })}
                 className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium">
                 Confirmar Importação
               </button>
@@ -1679,9 +1736,11 @@
       const [filterTipo, setFilterTipo]   = useState('');
       const [selectedArtigo, setSelectedArtigo] = useState(null);
       const [tipoMovimento, setTipoMovimento]   = useState('entrada');
-      const [isLoading, setIsLoading]     = useState(false);
+      const [operation, setOperation] = useState(null);
+      const isLoading = Boolean(operation);
       const [confirm, setConfirm]         = useState(null);
       const [importPreview, setImportPreview] = useState(null);
+      const [importSummary, setImportSummary] = useState(null);
       const [editandoMovimento, setEditandoMovimento] = useState(null);
       const [servicos, setServicos] = useState([]);
       const [mostrarFolhaInventario, setMostrarFolhaInventario] = useState(false);
@@ -1709,6 +1768,7 @@
       }
 
       function handleFileUpload(e) {
+        if (isLoading) return;
         const file = e.target.files[0];
         if (!file) return;
         e.target.value = '';
@@ -1718,104 +1778,129 @@
           return;
         }
 
-        setIsLoading(true);
+        setImportSummary(null);
+        setOperation({ type: 'import-file', message: 'A importar ficheiro...', detail: file.name });
         const reader = new FileReader();
 
         reader.onload = (ev) => {
-          try {
-            const parsed = parseXLSX(ev.target.result);
-            if (parsed.length === 0) {
-              toast('Nenhum artigo válido encontrado no ficheiro.', 'warning');
-              setIsLoading(false);
-              return;
+          setOperation({ type: 'process-import', message: 'A processar dados...', detail: 'A validar linhas e preparar pré-visualização.' });
+          setTimeout(() => {
+            try {
+              const { artigos: parsed, summary } = parseXLSX(ev.target.result);
+              if (parsed.length === 0) {
+                const ignoredMsg = summary.ignoredRows ? ` ${summary.ignoredRows} linha(s) ignorada(s).` : '';
+                toast(`Nenhum artigo válido encontrado no ficheiro.${ignoredMsg}`, 'warning');
+                return;
+              }
+              setImportPreview(parsed);
+              setImportSummary(summary);
+              const warnMsg = summary.warnings.length ? ` Avisos: ${summary.warnings.join(' ')}` : '';
+              toast(`Ficheiro processado: ${summary.importedRows} artigo(s), ${summary.ignoredRows} linha(s) ignorada(s).${warnMsg}`, summary.warnings.length ? 'warning' : 'info');
+            } catch (err) {
+              toast('Erro ao ler ficheiro: ' + err.message, 'error');
+            } finally {
+              setOperation(null);
             }
-            setImportPreview(parsed);
-          } catch (err) {
-            toast('Erro ao ler ficheiro: ' + err.message, 'error');
-          }
-          setIsLoading(false);
+          }, 0);
         };
 
-        reader.onerror = () => { toast('Erro ao ler ficheiro.', 'error'); setIsLoading(false); };
+        reader.onerror = () => { toast('Erro ao ler ficheiro.', 'error'); setOperation(null); };
         reader.readAsArrayBuffer(file);
       }
 
       function handleServicosUpload(e) {
+        if (isLoading) return;
         const file = e.target.files[0];
         if (!file) return;
         e.target.value = '';
         if (!file.name.match(/\.xlsx?$/i)) { toast('Por favor seleccione um ficheiro .xlsx', 'error'); return; }
+        setOperation({ type: 'import-services', message: 'A importar ficheiro...', detail: file.name });
         const reader = new FileReader();
         reader.onload = (ev) => {
-          try {
-            const parsed = parseServicosXLSX(ev.target.result);
-            if (parsed.length === 0) { toast('Nenhum serviço encontrado no ficheiro.', 'warning'); return; }
-            saveServicos(parsed);
-            setServicos(parsed);
-            toast(`${parsed.length} serviço(s) carregado(s) com sucesso.`);
-          } catch (err) {
-            toast('Erro ao ler ficheiro: ' + err.message, 'error');
-          }
+          setOperation({ type: 'process-services', message: 'A processar dados...', detail: 'A carregar lista de serviços.' });
+          setTimeout(() => {
+            try {
+              const parsed = parseServicosXLSX(ev.target.result);
+              if (parsed.length === 0) { toast('Nenhum serviço encontrado no ficheiro.', 'warning'); return; }
+              saveServicos(parsed);
+              setServicos(parsed);
+              toast(`${parsed.length} serviço(s) carregado(s) com sucesso.`);
+            } catch (err) {
+              toast('Erro ao ler ficheiro: ' + err.message, 'error');
+            } finally {
+              setOperation(null);
+            }
+          }, 0);
         };
-        reader.onerror = () => toast('Erro ao ler ficheiro.', 'error');
+        reader.onerror = () => { toast('Erro ao ler ficheiro.', 'error'); setOperation(null); };
         reader.readAsArrayBuffer(file);
       }
 
-      function confirmarImportacao({ novos, aActualizar }) {
+      function confirmarImportacao({ novos, aActualizar, semMudanca = [] }) {
         setImportPreview(null);
-        const today = new Date().toISOString().split('T')[0];
+        setOperation({ type: 'apply-import', message: 'A processar dados...', detail: 'A gravar alterações e movimentos de inventário.' });
 
-        const codigoToId = {};
-        artigos.forEach(a => { codigoToId[a.codigo] = a.id; });
+        setTimeout(() => {
+          const today = new Date().toISOString().split('T')[0];
+          const novosMovimentos = [...movimentos];
 
-        const novosMovimentos = [...movimentos];
+          const artigosActualizados = artigos.map(a => {
+            const upd = aActualizar.find(u => u.codigo === a.codigo);
+            if (!upd) return a;
+            const diff = upd.quantidade - a.quantidade;
+            if (diff !== 0) {
+              novosMovimentos.push({
+                id: generateId('mov'),
+                artigoId: a.id,
+                codigo: a.codigo,
+                artigo: a.artigo,
+                tipo: diff > 0 ? 'entrada' : 'saida',
+                quantidade: Math.abs(diff),
+                data: today,
+                destino: '',
+                observacoes: 'Importação de inventário',
+              });
+            }
+            return { ...a, quantidade: upd.quantidade };
+          });
 
-        const artigosActualizados = artigos.map(a => {
-          const upd = aActualizar.find(u => u.codigo === a.codigo);
-          if (!upd) return a;
-          const diff = upd.quantidade - a.quantidade;
-          if (diff !== 0) {
-            novosMovimentos.push({
-              id: generateId('mov'),
-              artigoId: a.id,
-              codigo: a.codigo,
-              artigo: a.artigo,
-              tipo: diff > 0 ? 'entrada' : 'saida',
-              quantidade: Math.abs(diff),
-              data: today,
-              destino: '',
-              observacoes: 'Importação de inventário',
-            });
-          }
-          return { ...a, quantidade: upd.quantidade };
-        });
+          const artigosNovos = novos.map(n => {
+            const id = generateId('art');
+            if (n.quantidade > 0) {
+              novosMovimentos.push({
+                id: generateId('mov'),
+                artigoId: id,
+                codigo: n.codigo,
+                artigo: n.artigo,
+                tipo: 'entrada',
+                quantidade: n.quantidade,
+                data: today,
+                destino: '',
+                observacoes: 'Importação de inventário',
+              });
+            }
+            return { id, ...n };
+          });
 
-        const artigosNovos = novos.map(n => {
-          const id = generateId('art');
-          if (n.quantidade > 0) {
-            novosMovimentos.push({
-              id: generateId('mov'),
-              artigoId: id,
-              codigo: n.codigo,
-              artigo: n.artigo,
-              tipo: 'entrada',
-              quantidade: n.quantidade,
-              data: today,
-              destino: '',
-              observacoes: 'Importação de inventário',
-            });
-          }
-          return { id, ...n };
-        });
+          const todosArtigos = [...artigosActualizados, ...artigosNovos];
+          persistData(todosArtigos, novosMovimentos);
 
-        const todosArtigos = [...artigosActualizados, ...artigosNovos];
-        persistData(todosArtigos, novosMovimentos);
-
-        const msgs = [];
-        if (novos.length) msgs.push(`${novos.length} novo(s)`);
-        if (aActualizar.length) msgs.push(`${aActualizar.length} actualizado(s)`);
-        toast(`Importação concluída: ${msgs.join(', ')}.`);
-        setActiveTab('inventario');
+          const importedCount = novos.length + aActualizar.length + semMudanca.length;
+          const ignoredRows = importSummary?.ignoredRows || 0;
+          const warnings = importSummary?.warnings || [];
+          const parts = [
+            `${importedCount} artigo(s) importado(s)`,
+            `${novos.length} novo(s)`,
+            `${aActualizar.length} actualizado(s)`,
+            `${semMudanca.length} sem alteração`,
+            `${ignoredRows} linha(s) ignorada(s)`,
+          ];
+          const warningMsg = warnings.length ? ` Avisos: ${warnings.join(' ')}` : '';
+          toast(`Importação concluída: ${parts.join(', ')}.${warningMsg}`, warnings.length ? 'warning' : 'info');
+          setImportSummary(null);
+          setOperation(null);
+          setActiveTab('inventario');
+        }, 0);
       }
 
       function addMovimento(data) {
@@ -1960,16 +2045,22 @@
       }
 
       async function exportarInventario() {
+        if (isLoading) return;
+        setOperation({ type: 'export-inventory', message: 'A exportar inventário...', detail: `${artigos.length} artigo(s) a preparar.` });
         try {
           const saved = await exportXLSX(artigos);
-          if (saved) toast('Inventário exportado com sucesso.');
+          if (saved) toast(`Inventário exportado com sucesso: ${artigos.length} artigo(s).`);
         } catch (err) {
           toast('Erro ao exportar: ' + err.message, 'error');
+        } finally {
+          setOperation(null);
         }
       }
 
       async function exportarMovimentos() {
+        if (isLoading) return;
         if (!movimentos.length) { toast('Nenhum movimento para exportar.', 'warning'); return; }
+        setOperation({ type: 'export-movements', message: 'A exportar movimentos...', detail: `${movimentos.length} movimento(s) a preparar.` });
         try {
           const wb = XLSX.utils.book_new();
           const data = [
@@ -1987,9 +2078,11 @@
           XLSX.utils.book_append_sheet(wb, ws, 'Movimentos');
           const fileName = 'movimentos_' + new Date().toISOString().split('T')[0] + '.xlsx';
           const saved = await saveWorkbookWithPicker(wb, fileName);
-          if (saved) toast('Movimentos exportados com sucesso.');
+          if (saved) toast(`Movimentos exportados com sucesso: ${movimentos.length} registo(s).`);
         } catch (err) {
           toast('Erro ao exportar: ' + err.message, 'error');
+        } finally {
+          setOperation(null);
         }
       }
 
@@ -2040,25 +2133,25 @@
                 <div className="flex flex-wrap gap-2">
                   <label className={`cursor-pointer px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium text-white ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}>
                     <Icons.Upload />
-                    <span>{isLoading ? 'A processar...' : 'Importar Inventário'}</span>
+                    <span>{operation?.type === 'import-file' ? 'A importar ficheiro...' : operation?.type === 'process-import' ? 'A processar dados...' : 'Importar Inventário'}</span>
                     <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} className="hidden" disabled={isLoading} />
                   </label>
                   {artigos.length > 0 && (
-                    <button onClick={() => setMostrarSaidaServico(true)}
-                      className="px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium text-white bg-gray-700 hover:bg-gray-800">
+                    <button onClick={() => setMostrarSaidaServico(true)} disabled={isLoading}
+                      className={`px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium text-white ${isLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-gray-700 hover:bg-gray-800'}`}>
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
                       Movimento por Serviço
                     </button>
                   )}
-                  <label className="cursor-pointer px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium border border-gray-300 hover:bg-gray-50 bg-white" title="Carregar lista de serviços para o campo Origem/Destino">
+                  <label className={`px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium border border-gray-300 bg-white ${isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-gray-50'}`} title="Carregar lista de serviços para o campo Origem/Destino">
                     <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                     <span className="text-gray-700">
-                      {servicos.length > 0 ? `Serviços (${servicos.length})` : 'Importar Serviços'}
+                      {operation?.type === 'import-services' ? 'A importar ficheiro...' : operation?.type === 'process-services' ? 'A processar dados...' : servicos.length > 0 ? `Serviços (${servicos.length})` : 'Importar Serviços'}
                     </span>
-                    <input type="file" accept=".xlsx,.xls" onChange={handleServicosUpload} className="hidden" />
+                    <input type="file" accept=".xlsx,.xls" onChange={handleServicosUpload} className="hidden" disabled={isLoading} />
                   </label>
                   {artigos.length > 0 && (
-                    <button onClick={limparDados} className="px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium text-red-600 border border-red-200 hover:bg-red-50">
+                    <button onClick={limparDados} disabled={isLoading} className={`px-3.5 py-2 rounded-lg flex items-center gap-2 text-sm font-medium border ${isLoading ? 'text-gray-400 border-gray-200 cursor-not-allowed' : 'text-red-600 border-red-200 hover:bg-red-50'}`}>
                       <Icons.Trash /> Limpar
                     </button>
                   )}
@@ -2066,6 +2159,8 @@
               </div>
             </div>
           </header>
+
+          <OperationStatus operation={operation} />
 
           <div className="bg-white border-b">
             <div className="max-w-7xl mx-auto px-4 flex gap-6">
@@ -2095,9 +2190,11 @@
                 onEliminarArtigo={pedirEliminarArtigo}
                 onExportar={exportarInventario}
                 setMostrarFolhaInventario={setMostrarFolhaInventario}
+                isBusy={isLoading}
+                operationType={operation?.type}
               />
             )}
-            {activeTab === 'movimentos' && <MovimentosTab movimentos={movimentos} onExportar={exportarMovimentos} onEditar={setEditandoMovimento} onEliminar={pedirEliminarMovimento} />}
+            {activeTab === 'movimentos' && <MovimentosTab movimentos={movimentos} onExportar={exportarMovimentos} onEditar={setEditandoMovimento} onEliminar={pedirEliminarMovimento} isBusy={isLoading} operationType={operation?.type} />}
           </div>
 
           {selectedArtigo && (
@@ -2138,9 +2235,10 @@
           {importPreview && (
             <ImportPreviewModal
               preview={importPreview}
+              summary={importSummary}
               artigos={artigos}
               onConfirm={confirmarImportacao}
-              onCancel={() => setImportPreview(null)}
+              onCancel={() => { setImportPreview(null); setImportSummary(null); }}
             />
           )}
 
