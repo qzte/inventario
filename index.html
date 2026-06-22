@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#2563eb">
+    <title>Sistema de Inventário</title>
+    
+    <!-- PWA Manifest (Caminho Relativo para GitHub Pages) -->
+    <link rel="manifest" href="./manifest.json">
+    <link rel="apple-touch-icon" href="./icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+    <style>
+        :root { --primary: #2563eb; --bg: #f3f4f6; --card: #ffffff; --text: #1f2937; --danger: #ef4444; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+        body { background-color: var(--bg); color: var(--text); padding-bottom: 80px; }
+        header { background: var(--primary); color: white; padding: 15px; text-align: center; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        header h1 { font-size: 1.2rem; }
+        header p { font-size: 0.8rem; opacity: 0.9; }
+        .container { padding: 15px; max-width: 600px; margin: 0 auto; }
+        .card { background: var(--card); border-radius: 12px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .scanner-container { width: 100%; border-radius: 8px; overflow: hidden; margin-bottom: 10px; display: none; }
+        .btn { width: 100%; padding: 15px; border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-danger { background: var(--danger); color: white; margin-top: 10px;}
+        .btn-secondary { background: #e5e7eb; color: var(--text); margin-top: 10px;}
+        .input-group { display: flex; gap: 10px; margin-top: 10px; }
+        .input-group input { flex: 1; padding: 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 1rem; }
+        .input-group button { padding: 12px 20px; background: var(--primary); color: white; border: none; border-radius: 8px; font-weight: bold; }
+        .inventory-list { list-style: none; }
+        .inventory-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #e5e7eb; }
+        .inventory-item:last-child { border-bottom: none; }
+        .item-info { flex: 1; }
+        .item-code { font-weight: bold; font-size: 1.1rem; }
+        .item-qty { color: #6b7280; font-size: 0.9rem; }
+        .item-actions button { background: none; border: none; font-size: 1.2rem; cursor: pointer; padding: 5px 10px; }
+        .btn-minus { color: var(--danger); }
+        .btn-plus { color: var(--primary); }
+        .stats { display: flex; justify-content: space-around; text-align: center; margin-top: 10px; }
+        .stat-value { font-size: 1.5rem; font-weight: bold; color: var(--primary); }
+        .stat-label { font-size: 0.8rem; color: #6b7280; }
+        .empty-state { text-align: center; padding: 20px; color: #9ca3af; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>📦 Sistema de Inventário</h1>
+        <p id="status-text">Modo Offline - Dados guardados localmente</p>
+    </header>
+
+    <div class="container">
+        <div class="card">
+            <div id="reader" class="scanner-container"></div>
+            <button id="btn-scan" class="btn btn-primary">📷 Escanear Código de Barras</button>
+            <div class="input-group">
+                <input type="text" id="manual-code" placeholder="Ou digite o código manualmente">
+                <button id="btn-add-manual">+</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 style="margin-bottom: 10px;">Itens Contados</h2>
+            <ul id="inventory-list" class="inventory-list">
+                <li class="empty-state">Nenhum item adicionado ainda.</li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <div class="stats">
+                <div><div class="stat-value" id="total-skus">0</div><div class="stat-label">Produtos Únicos</div></div>
+                <div><div class="stat-value" id="total-items">0</div><div class="stat-label">Total de Peças</div></div>
+            </div>
+            <button class="btn btn-secondary" onclick="exportData()">📤 Exportar Dados (CSV)</button>
+            <button class="btn btn-danger" onclick="clearInventory()">🗑️ Limpar Inventário</button>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+
+    <script>
+        let inventory = JSON.parse(localStorage.getItem('inventory_data')) || [];
+
+        function saveData() {
+            localStorage.setItem('inventory_data', JSON.stringify(inventory));
+            renderList();
+            updateStats();
+        }
+
+        function addItem(code) {
+            if (!code) return;
+            code = code.trim();
+            const existingItem = inventory.find(item => item.code === code);
+            if (existingItem) { existingItem.qty += 1; } 
+            else { inventory.push({ code: code, qty: 1, timestamp: new Date().toISOString() }); }
+            if (navigator.vibrate) navigator.vibrate(100);
+            saveData();
+        }
+
+        function updateQty(code, delta) {
+            const item = inventory.find(i => i.code === code);
+            if (item) {
+                item.qty += delta;
+                if (item.qty <= 0) inventory = inventory.filter(i => i.code !== code);
+                saveData();
+            }
+        }
+
+        function clearInventory() {
+            if (confirm('Tem a certeza que quer apagar todo o inventário?')) {
+                inventory = [];
+                saveData();
+            }
+        }
+
+        function exportData() {
+            if (inventory.length === 0) return alert('Inventário vazio!');
+            let csv = 'Codigo,Quantidade,DataHora\n';
+            inventory.forEach(item => { csv += `${item.code},${item.qty},${item.timestamp}\n`; });
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `inventario_${new Date().getTime()}.csv`;
+            a.click();
+        }
+
+        function renderList() {
+            const list = document.getElementById('inventory-list');
+            if (inventory.length === 0) { list.innerHTML = '<li class="empty-state">Nenhum item adicionado ainda.</li>'; return; }
+            list.innerHTML = inventory.map(item => `
+                <li class="inventory-item">
+                    <div class="item-info"><div class="item-code">${item.code}</div><div class="item-qty">Qtd: ${item.qty}</div></div>
+                    <div class="item-actions">
+                        <button class="btn-minus" onclick="updateQty('${item.code}', -1)">➖</button>
+                        <button class="btn-plus" onclick="updateQty('${item.code}', 1)">➕</button>
+                    </div>
+                </li>`).join('');
+        }
+
+        function updateStats() {
+            document.getElementById('total-skus').innerText = inventory.length;
+            const total = inventory.reduce((sum, item) => sum + item.qty, 0);
+            document.getElementById('total-items').innerText = total;
+        }
+
+        const html5QrCode = new Html5Qrcode("reader");
+        const btnScan = document.getElementById('btn-scan');
+        const readerDiv = document.getElementById('reader');
+        let isScanning = false;
+
+        btnScan.addEventListener('click', () => {
+            if (!isScanning) {
+                readerDiv.style.display = 'block';
+                btnScan.innerText = '⏹️ Parar Scanner';
+                btnScan.classList.remove('btn-primary');
+                btnScan.classList.add('btn-danger');
+                html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 150 } },
+                    (decodedText) => { addItem(decodedText); },
+                    (errorMessage) => { }
+                ).catch(err => { alert('Erro ao aceder à câmara.'); stopScanner(); });
+                isScanning = true;
+            } else { stopScanner(); }
+        });
+
+        function stopScanner() {
+            html5QrCode.stop().then(() => {
+                readerDiv.style.display = 'none';
+                btnScan.innerText = '📷 Escanear Código de Barras';
+                btnScan.classList.remove('btn-danger');
+                btnScan.classList.add('btn-primary');
+                isScanning = false;
+            }).catch(err => console.log(err));
+        }
+
+        document.getElementById('btn-add-manual').addEventListener('click', () => {
+            const input = document.getElementById('manual-code');
+            addItem(input.value);
+            input.value = '';
+        });
+
+        document.getElementById('manual-code').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('btn-add-manual').click();
+        });
+
+        renderList();
+        updateStats();
+
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(() => console.log('SW Registado'))
+                    .catch(err => console.log('SW Falhou', err));
+            });
+        }
+    </script>
+</body>
+</html>
